@@ -1,0 +1,21 @@
+# Compiled Python files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# Environment variables
+.env
+.env.local
+
+# IDE configurations
+.idea/
+.vscode/
+
+# OS files
+.DS_Store
