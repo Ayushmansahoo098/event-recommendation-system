@@ -1,4 +1,6 @@
-from fastapi import FastAPI, HTTPException
+import os
+
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import Optional, List
@@ -19,14 +21,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Pydantic input models
+# Pydantic input models for backward-compatibility POST endpoints
 class RecommendationRequest(BaseModel):
     userId: str = Field(..., description="Firestore user ID to calculate personalized matches for")
     limit: Optional[int] = Field(20, description="Maximum number of recommendations to return")
 
 class SimilarRequest(BaseModel):
     eventId: str = Field(..., description="Event ID to find matches for")
-    limit: Optional[int] = Field(5, description="Maximum number of similar events to return")
+    limit: Optional[int] = Field(10, description="Maximum number of similar events to return")
 
 @app.on_event("startup")
 async def startup_event():
@@ -37,8 +39,24 @@ async def startup_event():
     except Exception as e:
         print(f"Failed to initialize recommender on startup: {e}")
 
+# Phase 3 - GET endpoint for User Recommendations
+@app.get("/recommendations")
+async def get_user_recommendations_get(
+    userId: str = Query(..., description="Firestore user ID to calculate personalized matches for"),
+    limit: int = Query(20, description="Maximum number of recommendations to return")
+):
+    try:
+        results = recommender.get_recommendations(user_id=userId, limit=limit)
+        return {
+            "success": True,
+            "recommendedEvents": results
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal recommendation computation error: {str(e)}")
+
+# Backward-compatibility POST endpoint for User Recommendations
 @app.post("/recommendations")
-async def get_user_recommendations(req: RecommendationRequest):
+async def get_user_recommendations_post(req: RecommendationRequest):
     try:
         results = recommender.get_recommendations(user_id=req.userId, limit=req.limit)
         return {
@@ -48,10 +66,14 @@ async def get_user_recommendations(req: RecommendationRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal recommendation computation error: {str(e)}")
 
-@app.post("/similar")
-async def get_similar_events(req: SimilarRequest):
+# Phase 2 - GET endpoint for Similar Events
+@app.get("/similar")
+async def get_similar_events_get(
+    eventId: str = Query(..., description="Event ID to find matches for"),
+    limit: int = Query(10, description="Maximum number of similar events to return")
+):
     try:
-        results = recommender.get_similar_events(event_id=req.eventId, limit=req.limit)
+        results = recommender.get_similar_events(event_id=eventId, limit=limit)
         return {
             "success": True,
             "similarEvents": results
@@ -59,11 +81,49 @@ async def get_similar_events(req: SimilarRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal similarity match error: {str(e)}")
 
+# Backward-compatibility POST endpoint for Similar Events
+@app.post("/similar")
+async def get_similar_events_post(req: SimilarRequest):
+    try:
+        limit_val = req.limit if req.limit is not None else 10
+        results = recommender.get_similar_events(event_id=req.eventId, limit=limit_val)
+        return {
+            "success": True,
+            "similarEvents": results
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal similarity match error: {str(e)}")
+
+# Cache Invalidation Endpoint
+@app.post("/recommendations/invalidate")
+async def invalidate_user_cache_route(
+    userId: str = Query(..., description="User ID to invalidate embedding cache for")
+):
+    try:
+        recommender.invalidate_user_cache(userId)
+        return {
+            "success": True,
+            "message": f"Successfully invalidated cache for user {userId}"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Embeddings Sync Endpoint
+@app.post("/embeddings/sync")
+async def sync_embeddings_route():
+    try:
+        recommender.sync_embeddings()
+        return {
+            "success": True,
+            "message": "Embeddings sync completed successfully.",
+            "totalCached": len(recommender.event_cache)
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to execute database sync: {str(e)}")
+
+# Backward-compatibility /sync POST route
 @app.post("/sync")
 async def trigger_embedding_sync():
-    """
-    Triggers Firestore database streams to cache missing event embeddings immediately.
-    """
     try:
         recommender.sync_embeddings()
         return {
@@ -76,12 +136,30 @@ async def trigger_embedding_sync():
 
 @app.get("/health")
 async def health_check():
+    debug_info = recommender.get_cache_debug_info()
     return {
         "status": "healthy",
         "firebaseConnected": recommender.db is not None,
         "transformerLoaded": recommender.model is not None,
-        "totalCachedEvents": len(recommender.event_cache)
+        "totalCachedEvents": len(recommender.event_cache),
+        "activeEvents": debug_info["activeEvents"],
+        "expiredEvents": debug_info["expiredEvents"],
+        "totalCachedUserProfiles": len(recommender.user_embedding_cache),
+        "averageRecommendationScore": recommender.get_average_recommendation_score(),
+        "topCategories": recommender.get_top_categories_stats()
     }
+
+@app.get("/debug/cache")
+async def debug_cache():
+    """Dev-only endpoint: inspect the event cache for debugging."""
+    try:
+        info = recommender.get_cache_debug_info()
+        return {
+            "success": True,
+            **info
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn
