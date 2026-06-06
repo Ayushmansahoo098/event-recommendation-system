@@ -6,7 +6,7 @@ from collections import defaultdict
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
 # pyrefly: ignore [missing-import]
-from sentence_transformers import SentenceTransformer
+from sklearn.feature_extraction.text import TfidfVectorizer
 # pyrefly: ignore [missing-import]
 import firebase_admin
 # pyrefly: ignore [missing-import]
@@ -98,7 +98,7 @@ def _is_active_event(event: dict) -> bool:
 
 class EventRecommender:
     def __init__(self):
-        self.model = None
+        self.vectorizer = None
         self.db = None
         self.event_cache = {}  # event_id -> dict with embedding, title, city, category, tags, date, views, saves, registrations, status
         self.user_embedding_cache = {}  # user_id -> {"embedding": vector, "timestamp": datetime, ...}
@@ -139,13 +139,13 @@ class EventRecommender:
         except Exception as e:
             print(f"Failed to initialize Firebase Admin SDK: {e}")
 
-        # 2. Load Sentence Transformer Model
+        # 2. Initialize TF-IDF Vectorizer
         try:
-            print("Loading sentence-transformers (all-MiniLM-L6-v2)...")
-            self.model = SentenceTransformer('all-MiniLM-L6-v2')
-            print("SentenceTransformer loaded.")
+            print("Initializing TF-IDF Vectorizer...")
+            self.vectorizer = TfidfVectorizer(stop_words='english')
+            print("TF-IDF Vectorizer ready.")
         except Exception as e:
-            print(f"Failed to load SentenceTransformer: {e}")
+            print(f"Failed to initialize TfidfVectorizer: {e}")
 
         self.initialized = True
 
@@ -158,7 +158,7 @@ class EventRecommender:
         title, description, tags, category, and stores them in memory.
         Also loads dates, views, saves, registrations, and status for filtering.
         """
-        if not self.db or not self.model:
+        if not self.db or not self.vectorizer:
             print("Cannot sync: Recommender is in offline/mock mode.")
             return
 
@@ -204,8 +204,8 @@ class EventRecommender:
                 ))
 
             if events_to_embed:
-                print(f"Generating embeddings for {len(events_to_embed)} events...")
-                embeddings = self.model.encode(events_to_embed)
+                print(f"Fitting TF-IDF Vectorizer and transforming {len(events_to_embed)} events...")
+                embeddings = self.vectorizer.fit_transform(events_to_embed).toarray()
 
                 for i, (event_id, title, category, tags, city, source,
                         event_date_str, views, saves, regs, status, organizer) in enumerate(events_metadata):
@@ -424,7 +424,7 @@ class EventRecommender:
 
             # A. Process Explicit Interests (Weight = 4 each)
             if interests:
-                interest_vectors = self.model.encode(interests)
+                interest_vectors = self.vectorizer.transform(interests).toarray()
                 for vec in interest_vectors:
                     vectors.append(vec)
                     weights.append(WEIGHT_INTEREST)
@@ -482,7 +482,7 @@ class EventRecommender:
 
                 elif action == "search" and act.get("query"):
                     query_str = act.get("query")
-                    query_vec = self.model.encode([query_str])[0]
+                    query_vec = self.vectorizer.transform([query_str]).toarray()[0]
                     vectors.append(query_vec)
                     weights.append(WEIGHT_SEARCH)
                     user_searches.append(query_str)

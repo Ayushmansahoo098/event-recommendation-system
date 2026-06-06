@@ -140,7 +140,7 @@ async def health_check():
     return {
         "status": "healthy",
         "firebaseConnected": recommender.db is not None,
-        "transformerLoaded": recommender.model is not None,
+        "transformerLoaded": recommender.vectorizer is not None,
         "totalCachedEvents": len(recommender.event_cache),
         "activeEvents": debug_info["activeEvents"],
         "expiredEvents": debug_info["expiredEvents"],
