@@ -4,6 +4,7 @@ import random
 from datetime import datetime, timezone
 from collections import defaultdict
 import numpy as np
+from scipy import sparse
 from sklearn.metrics.pairwise import cosine_similarity
 # pyrefly: ignore [missing-import]
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -102,8 +103,40 @@ class EventRecommender:
         self.db = None
         self.event_cache = {}  # event_id -> dict with embedding, title, city, category, tags, date, views, saves, registrations, status
         self.user_embedding_cache = {}  # user_id -> {"embedding": vector, "timestamp": datetime, ...}
+        self.event_ids = []
+        self.event_index = {}
+        self.event_embeddings = None
         self.recommendation_scores_history = []
         self.initialized = False
+
+    def _ensure_sparse(self, vector):
+        if sparse.issparse(vector):
+            return vector.tocsr()
+        return sparse.csr_matrix(vector)
+
+    def _cosine_similarity(self, vec_a, vec_b):
+        vec_a = self._ensure_sparse(vec_a)
+        vec_b = self._ensure_sparse(vec_b)
+        return float(cosine_similarity(vec_a, vec_b)[0, 0])
+
+    def _build_user_profile_vector(self, vectors, weights):
+        if not vectors:
+            return None
+
+        any_sparse = any(sparse.issparse(v) for v in vectors)
+        if any_sparse:
+            sparse_vectors = [self._ensure_sparse(v) for v in vectors]
+            stacked = sparse.vstack(sparse_vectors, format="csr")
+            weights_arr = np.asarray(weights, dtype=np.float64).reshape(-1, 1)
+            weighted = stacked.multiply(weights_arr)
+            summed = weighted.sum(axis=0)
+            total_weight = float(weights_arr.sum())
+            if total_weight == 0.0:
+                return None
+            averaged = summed / total_weight
+            return sparse.csr_matrix(averaged)
+
+        return np.average(vectors, axis=0, weights=weights).reshape(1, -1)
 
     def initialize(self):
         if self.initialized:
@@ -205,12 +238,16 @@ class EventRecommender:
 
             if events_to_embed:
                 print(f"Fitting TF-IDF Vectorizer and transforming {len(events_to_embed)} events...")
-                embeddings = self.vectorizer.fit_transform(events_to_embed).toarray()
+                embeddings = self.vectorizer.fit_transform(events_to_embed)
+                self.event_embeddings = embeddings.tocsr()
+                self.event_ids = []
+                self.event_index = {}
 
                 for i, (event_id, title, category, tags, city, source,
                         event_date_str, views, saves, regs, status, organizer) in enumerate(events_metadata):
+                    event_vec = self.event_embeddings[i]
                     self.event_cache[event_id] = {
-                        "embedding": embeddings[i],
+                        "embedding": event_vec,
                         "title": title,
                         "category": category,
                         "tags": tags,
@@ -223,6 +260,8 @@ class EventRecommender:
                         "status": status,
                         "organizer": organizer,
                     }
+                    self.event_ids.append(event_id)
+                    self.event_index[event_id] = i
                 print(f"Successfully generated and cached {len(events_to_embed)} event embeddings in memory.")
             else:
                 print("No events found in database.")
@@ -303,7 +342,7 @@ class EventRecommender:
             return []
 
         target_event = self.event_cache[event_id]
-        target_vector = target_event["embedding"].reshape(1, -1)
+        target_vector = target_event["embedding"]
         target_title = target_event.get("title", "this event")
         target_category = target_event.get("category", "")
 
@@ -316,8 +355,8 @@ class EventRecommender:
             if not _is_active_event(other_event):
                 continue
 
-            other_vector = other_event["embedding"].reshape(1, -1)
-            score = float(cosine_similarity(target_vector, other_vector)[0][0])
+            other_vector = other_event["embedding"]
+            score = self._cosine_similarity(target_vector, other_vector)
             score = max(0.0, score)
 
             # Generate reason
@@ -424,9 +463,9 @@ class EventRecommender:
 
             # A. Process Explicit Interests (Weight = 4 each)
             if interests:
-                interest_vectors = self.vectorizer.transform(interests).toarray()
-                for vec in interest_vectors:
-                    vectors.append(vec)
+                interest_vectors = self.vectorizer.transform(interests)
+                for i in range(interest_vectors.shape[0]):
+                    vectors.append(interest_vectors[i])
                     weights.append(WEIGHT_INTEREST)
 
             # B. Process Bookmarked Saved Events (Weight = 7)
@@ -482,7 +521,7 @@ class EventRecommender:
 
                 elif action == "search" and act.get("query"):
                     query_str = act.get("query")
-                    query_vec = self.vectorizer.transform([query_str]).toarray()[0]
+                    query_vec = self.vectorizer.transform([query_str])[0]
                     vectors.append(query_vec)
                     weights.append(WEIGHT_SEARCH)
                     user_searches.append(query_str)
@@ -500,7 +539,10 @@ class EventRecommender:
                 print(f"User {user_id} has no profile features. Returning smart fallback.")
                 return self._get_popularity_fallback(limit, preferred_cities_lower)
 
-            user_profile_vector = np.average(vectors, axis=0, weights=weights).reshape(1, -1)
+            user_profile_vector = self._build_user_profile_vector(vectors, weights)
+            if user_profile_vector is None:
+                print(f"User {user_id} profile aggregation failed. Returning smart fallback.")
+                return self._get_popularity_fallback(limit, preferred_cities_lower)
 
             # Save in-memory cache
             self.user_embedding_cache[user_id] = {
@@ -537,8 +579,8 @@ class EventRecommender:
                 continue
 
             # A. Similarity (70%)
-            other_vector = other_event["embedding"].reshape(1, -1)
-            similarity = float(cosine_similarity(user_profile_vector, other_vector)[0][0])
+            other_vector = other_event["embedding"]
+            similarity = self._cosine_similarity(user_profile_vector, other_vector)
             similarity = max(0.0, similarity)
 
             # B. Popularity (15%)
@@ -787,10 +829,15 @@ class EventRecommender:
                     "active": _is_active_event(event),
                 })
 
-        cache_bytes = sum(
-            (event.get("embedding").nbytes if event.get("embedding") is not None else 0)
-            for event in self.event_cache.values()
-        )
+        cache_bytes = 0
+        for event in self.event_cache.values():
+            emb = event.get("embedding")
+            if emb is None:
+                continue
+            if sparse.issparse(emb):
+                cache_bytes += emb.data.nbytes + emb.indices.nbytes + emb.indptr.nbytes
+            else:
+                cache_bytes += getattr(emb, "nbytes", 0)
 
         return {
             "totalCached": len(self.event_cache),
