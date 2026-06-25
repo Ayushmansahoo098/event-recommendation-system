@@ -197,6 +197,7 @@ class EventRecommender:
 
         try:
             print("Syncing event embeddings (in-memory)...")
+            self.event_cache = {}  # Clear cache to prevent memory leaks and shape mismatch issues
             events_ref = self.db.collection("events")
             docs = events_ref.stream()
 
@@ -206,6 +207,10 @@ class EventRecommender:
             for doc in docs:
                 event_id = doc.id
                 data = doc.to_dict()
+
+                # Memory Optimization: skip expired/inactive events to stay under RAM limit
+                if not _is_active_event(data):
+                    continue
 
                 title = data.get("title") or ""
                 description = data.get("description") or ""
@@ -559,6 +564,18 @@ class EventRecommender:
                 return self._get_popularity_fallback(limit, preferred_cities_lower)
 
             # Save in-memory cache
+            if len(self.user_embedding_cache) >= 200:
+                try:
+                    # Evict the oldest cached user profile to prevent memory growth
+                    oldest_user = min(
+                        self.user_embedding_cache.keys(),
+                        key=lambda k: self.user_embedding_cache[k].get("timestamp", datetime.min)
+                    )
+                    del self.user_embedding_cache[oldest_user]
+                    print(f"Evicted oldest user {oldest_user} from cache to reclaim memory.")
+                except Exception as evict_err:
+                    print(f"Error evicting user cache entry: {evict_err}")
+
             self.user_embedding_cache[user_id] = {
                 "embedding": user_profile_vector,
                 "interests": interests,
