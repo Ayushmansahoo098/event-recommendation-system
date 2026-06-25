@@ -231,9 +231,16 @@ class EventRecommender:
                 text_to_embed = " ".join([tc.strip() for tc in text_components if tc.strip()])
 
                 events_to_embed.append(text_to_embed)
+                is_online = data.get("isOnline") or False
+                registration_url = data.get("registrationUrl") or ""
+                time_str = data.get("time") or ""
+                location = data.get("location") or ""
+                banner_image = data.get("bannerImage") or ""
+
                 events_metadata.append((
                     event_id, title, category, tags, city, source,
-                    event_date_str, views, saves, regs, status, organizer
+                    event_date_str, views, saves, regs, status, organizer,
+                    description, is_online, registration_url, time_str, location, banner_image
                 ))
 
             if events_to_embed:
@@ -244,16 +251,23 @@ class EventRecommender:
                 self.event_index = {}
 
                 for i, (event_id, title, category, tags, city, source,
-                        event_date_str, views, saves, regs, status, organizer) in enumerate(events_metadata):
+                        event_date_str, views, saves, regs, status, organizer,
+                        description, is_online, registration_url, time_str, location, banner_image) in enumerate(events_metadata):
                     event_vec = self.event_embeddings[i]
                     self.event_cache[event_id] = {
                         "embedding": event_vec,
                         "title": title,
+                        "description": description,
                         "category": category,
                         "tags": tags,
                         "city": city,
                         "source": source,
                         "date": event_date_str,
+                        "time": time_str,
+                        "location": location,
+                        "isOnline": is_online,
+                        "registrationUrl": registration_url,
+                        "bannerImage": banner_image,
                         "views": views,
                         "saves": saves,
                         "registrations": regs,

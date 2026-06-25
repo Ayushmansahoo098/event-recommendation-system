@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import Optional, List
 from recommender import recommender
+from models import ChatRequest
 
 app = FastAPI(
     title="Kairo Event Recommendation Engine",
@@ -133,6 +134,38 @@ async def trigger_embedding_sync():
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to execute database sync: {str(e)}")
+
+# Chat endpoint for AI Event Agent
+@app.post("/chat")
+async def chat_endpoint(req: ChatRequest):
+    from gemini_client import gemini_client
+    if not gemini_client.is_api_key_available():
+        from fastapi.responses import JSONResponse
+        return JSONResponse(
+            status_code=503,
+            content={
+                "success": False,
+                "message": "AI Assistant is temporarily unavailable."
+            }
+        )
+    try:
+        from chatbot import handle_agent_chat
+        response_json, matching_events, conv_id = await handle_agent_chat(
+            message=req.message,
+            user_id=req.userId,
+            conversation_id=req.conversationId
+        )
+        return {
+            "intent": response_json.get("intent", "find_events"),
+            "reply": response_json.get("reply", ""),
+            "events": matching_events,
+            "suggestions": response_json.get("suggestions", []),
+            "conversationId": conv_id
+        }
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Internal chat computation error: {str(e)}")
 
 @app.get("/health")
 async def health_check():
