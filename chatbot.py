@@ -20,10 +20,6 @@ class ConversationMemoryManager:
             conversation_id = str(uuid.uuid4())
             
         if conversation_id not in self._sessions:
-            if len(self._sessions) >= 100:
-                oldest_conv = min(self._sessions.keys(), key=lambda k: self._sessions[k]["updated_at"])
-                del self._sessions[oldest_conv]
-                
             self._sessions[conversation_id] = {
                 "history": [],
                 "active_filters": {},
@@ -51,16 +47,8 @@ class ConversationMemoryManager:
 memory_manager = ConversationMemoryManager()
 
 def get_user_profile(user_id: Optional[str]) -> Tuple[List[str], List[str]]:
-    """Fetches user interests and preferred cities, using memory cache first to reduce Firestore reads."""
-    if not user_id:
-        return [], []
-
-    # Check in-memory cache first
-    cached = recommender.user_embedding_cache.get(user_id)
-    if cached:
-        return cached.get("interests", []), cached.get("preferred_cities_lower", [])
-
-    if not recommender.db:
+    """Fetches user interests and preferred cities from Firestore using the recommender's db client."""
+    if not user_id or not recommender.db:
         return [], []
     try:
         user_snap = recommender.db.collection("users").document(user_id).get()

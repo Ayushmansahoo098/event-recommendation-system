@@ -1,7 +1,6 @@
 import os
 import json
 import time
-import asyncio
 import google.generativeai as genai
 from typing import Dict, Any, Tuple, List
 
@@ -55,26 +54,8 @@ class GeminiClient:
 
         start_time = time.perf_counter()
         
-        # Call API synchronously in a thread to prevent blocking the async loop
-        try:
-            response = await asyncio.wait_for(
-                asyncio.to_thread(model.generate_content, contents), 
-                timeout=15.0
-            )
-        except asyncio.TimeoutError:
-            print("Gemini API call timed out after 15 seconds.")
-            return {
-                "intent": "general_help",
-                "reply": "I'm sorry, I'm taking too long to think. Let's try asking something else.",
-                "suggestions": ["Show all events", "Clear filters"]
-            }, 0, 0, time.perf_counter() - start_time
-        except Exception as e:
-            print(f"Error calling Gemini API: {e}")
-            return {
-                "intent": "general_help",
-                "reply": "I'm having trouble connecting right now. Please try again later.",
-                "suggestions": ["Show all events"]
-            }, 0, 0, time.perf_counter() - start_time
+        # Call API synchronously (wrapped as async to prevent blocking loop)
+        response = model.generate_content(contents)
         
         latency = time.perf_counter() - start_time
 
