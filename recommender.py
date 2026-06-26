@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from collections import defaultdict
 import numpy as np
 from scipy import sparse
+import gc
 from sklearn.metrics.pairwise import cosine_similarity
 # pyrefly: ignore [missing-import]
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -106,7 +107,6 @@ class EventRecommender:
         self.event_ids = []
         self.event_index = {}
         self.event_embeddings = None
-        self.recommendation_scores_history = []
         self.initialized = False
 
     def _ensure_sparse(self, vector):
@@ -197,7 +197,9 @@ class EventRecommender:
 
         try:
             print("Syncing event embeddings (in-memory)...")
-            self.event_cache = {}  # Clear cache to prevent memory leaks and shape mismatch issues
+            new_event_cache = {}
+            new_event_ids = []
+            new_event_index = {}
             events_ref = self.db.collection("events")
             docs = events_ref.stream()
 
@@ -251,15 +253,15 @@ class EventRecommender:
             if events_to_embed:
                 print(f"Fitting TF-IDF Vectorizer and transforming {len(events_to_embed)} events...")
                 embeddings = self.vectorizer.fit_transform(events_to_embed)
-                self.event_embeddings = embeddings.tocsr()
-                self.event_ids = []
-                self.event_index = {}
+                new_event_embeddings = embeddings.tocsr()
+                new_event_ids = []
+                new_event_index = {}
 
                 for i, (event_id, title, category, tags, city, source,
                         event_date_str, views, saves, regs, status, organizer,
                         description, is_online, registration_url, time_str, location, banner_image) in enumerate(events_metadata):
-                    event_vec = self.event_embeddings[i]
-                    self.event_cache[event_id] = {
+                    event_vec = new_event_embeddings[i]
+                    new_event_cache[event_id] = {
                         "embedding": event_vec,
                         "title": title,
                         "description": description,
@@ -279,9 +281,24 @@ class EventRecommender:
                         "status": status,
                         "organizer": organizer,
                     }
-                    self.event_ids.append(event_id)
-                    self.event_index[event_id] = i
-                print(f"Successfully generated and cached {len(events_to_embed)} event embeddings in memory.")
+                    new_event_ids.append(event_id)
+                    new_event_index[event_id] = i
+                    
+                # Safe Swap
+                self.event_embeddings = new_event_embeddings
+                self.event_cache = new_event_cache
+                self.event_ids = new_event_ids
+                self.event_index = new_event_index
+                
+                # Aggressive Garbage Collection
+                del events_to_embed
+                del events_metadata
+                del embeddings
+                del new_event_embeddings
+                del new_event_cache
+                gc.collect()
+
+                print(f"Successfully generated and cached {len(self.event_ids)} event embeddings in memory.")
             else:
                 print("No events found in database.")
         except Exception as e:
@@ -564,7 +581,7 @@ class EventRecommender:
                 return self._get_popularity_fallback(limit, preferred_cities_lower)
 
             # Save in-memory cache
-            if len(self.user_embedding_cache) >= 200:
+            if len(self.user_embedding_cache) >= 50:
                 try:
                     # Evict the oldest cached user profile to prevent memory growth
                     oldest_user = min(
@@ -676,8 +693,6 @@ class EventRecommender:
         pool = recommendations[:DIVERSITY_POOL_SIZE]
         diverse_recs = self._diversity_rerank(pool, limit)
 
-        for rec in diverse_recs:
-            self.recommendation_scores_history.append(rec["score"])
         return diverse_recs
 
     def _generate_reason(
@@ -825,9 +840,7 @@ class EventRecommender:
             print(f"No cache entry found to invalidate for user: {user_id}")
 
     def get_average_recommendation_score(self) -> float:
-        if not self.recommendation_scores_history:
-            return 0.0
-        return float(np.mean(self.recommendation_scores_history))
+        return 0.0
 
     def get_top_categories_stats(self) -> dict:
         category_counts = {}

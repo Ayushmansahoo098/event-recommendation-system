@@ -1,4 +1,8 @@
 import os
+import psutil
+import time
+import json
+import datetime
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -113,7 +117,17 @@ async def invalidate_user_cache_route(
 @app.post("/embeddings/sync")
 async def sync_embeddings_route():
     try:
+        start_time = time.perf_counter()
         recommender.sync_embeddings()
+        duration_ms = (time.perf_counter() - start_time) * 1000
+        log_payload = {
+            "timestamp": datetime.datetime.now().isoformat(),
+            "action": "sync_embeddings",
+            "sync_time_ms": round(duration_ms, 2),
+            "total_cached": len(recommender.event_cache)
+        }
+        print(f"PERFORMANCE_METRICS: {json.dumps(log_payload)}")
+        
         return {
             "success": True,
             "message": "Embeddings sync completed successfully.",
@@ -126,7 +140,17 @@ async def sync_embeddings_route():
 @app.post("/sync")
 async def trigger_embedding_sync():
     try:
+        start_time = time.perf_counter()
         recommender.sync_embeddings()
+        duration_ms = (time.perf_counter() - start_time) * 1000
+        log_payload = {
+            "timestamp": datetime.datetime.now().isoformat(),
+            "action": "sync_embeddings",
+            "sync_time_ms": round(duration_ms, 2),
+            "total_cached": len(recommender.event_cache)
+        }
+        print(f"PERFORMANCE_METRICS: {json.dumps(log_payload)}")
+        
         return {
             "success": True,
             "message": "Embeddings sync completed successfully.",
@@ -170,6 +194,12 @@ async def chat_endpoint(req: ChatRequest):
 @app.get("/health")
 async def health_check():
     debug_info = recommender.get_cache_debug_info()
+    
+    # Get memory usage
+    process = psutil.Process(os.getpid())
+    memory_info = process.memory_info()
+    memory_usage_mb = memory_info.rss / (1024 * 1024)
+
     return {
         "status": "healthy",
         "firebaseConnected": recommender.db is not None,
@@ -179,7 +209,8 @@ async def health_check():
         "expiredEvents": debug_info["expiredEvents"],
         "totalCachedUserProfiles": len(recommender.user_embedding_cache),
         "averageRecommendationScore": recommender.get_average_recommendation_score(),
-        "topCategories": recommender.get_top_categories_stats()
+        "topCategories": recommender.get_top_categories_stats(),
+        "memoryUsageMB": round(memory_usage_mb, 2)
     }
 
 @app.get("/debug/cache")
